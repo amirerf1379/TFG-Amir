@@ -1,0 +1,152 @@
+cas mySession sessopts=(caslib=casuser timeout=1800 locale="en_US");
+caslib _all_ assign;
+
+proc python;
+submit;
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+from datetime import datetime
+from zipfile import ZipFile
+import io
+import pandas as pd
+import os
+
+# Get the microvariables
+provider = SAS.symget("provider")
+start_date_str = SAS.symget("start_date")
+end_date_str = SAS.symget("end_date")
+country= SAS.symget("country")
+continent= SAS.symget("continent")
+
+# Base URL for downloading data
+if provider == "GD":
+    base_url = 'http://data.gdeltproject.org/events/index.html'
+    # GDELT-specific code for web scraping and processing
+    # Convert start and end dates to datetime objects for GDELT
+    start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+    end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+
+    # Web scraping to download files
+    response = requests.get(base_url)
+    if response.status_code == 200:
+        soup = BeautifulSoup(response.text, 'html.parser')
+        links = soup.find_all('a', href=True)
+
+        combined_df = pd.DataFrame()
+        nb_files = 0
+        for link in links:
+            file_url = urljoin(base_url, link['href'])
+            file_name = os.path.basename(file_url)
+
+            if file_name.endswith('.export.CSV.zip'):
+                date_str = file_name.split('.')[0]
+                file_date = datetime.strptime(date_str, '%Y%m%d')
+
+                if start_date <= file_date <= end_date:
+                    nb_files += 1
+                    file_response = requests.get(file_url)
+                    with ZipFile(io.BytesIO(file_response.content), 'r') as zip_ref:
+                        for file_info in zip_ref.infolist():
+                            with zip_ref.open(file_info.filename) as file:
+                                df = pd.read_csv(file, delimiter='\t', header=None, low_memory=False)
+                                df_cleaned = df.applymap(lambda x: x.strip() if isinstance(x, str) else x).fillna('')
+                                combined_df = pd.concat([combined_df, df_cleaned], ignore_index=True)
+
+        # Define column names for the combined dataframe
+        combined_df.columns =  [
+    "GlobalEventID", "Day", "MonthYear", "Year", "FractionDate", "Actor1Code", "Actor1Name", "Actor1CountryCode",
+    "Actor1KnownGroupCode", "Actor1EthnicCode", "Actor1Religion1Code", "Actor1Religion2Code", "Actor1Type1Code",
+    "Actor1Type2Code", "Actor1Type3Code", "Actor2Code", "Actor2Name", "Actor2CountryCode", "Actor2KnownGroupCode",
+    "Actor2EthnicCode", "Actor2Religion1Code", "Actor2Religion2Code", "Actor2Type1Code", "Actor2Type2Code",
+    "Actor2Type3Code", "IsRootEvent", "EventCode", "EventBaseCode", "EventRootCode", "QuadClass", "GoldsteinScale",
+    "NumMentions", "NumSources", "NumArticles", "AvgTone", "Actor1Geo_Type", "Actor1Geo_Fullname",
+    "Actor1Geo_CountryCode", "Actor1Geo_ADM1Code", "Actor1Geo_Lat", "Actor1Geo_Long", "Actor1Geo_FeatureID",
+    "Actor2Geo_Type", "Actor2Geo_Fullname", "Actor2Geo_CountryCode", "Actor2Geo_ADM1Code", "Actor2Geo_Lat",
+    "Actor2Geo_Long", "Actor2Geo_FeatureID", "ActionGeo_Type", "ActionGeo_Fullname", "ActionGeo_CountryCode",
+    "ActionGeo_ADM1Code", "ActionGeo_Lat", "ActionGeo_Long", "ActionGeo_FeatureID", "DATEADDED", "SOURCEURL"]  # Replace with actual column names
+
+
+        # Convert combined data frame to a CAS table
+        ds = SAS.df2sd(combined_df,"userdata")
+        #SAS.symput('nb_obs',len(combined_df))
+        #SAS.symput('nb_files',nb_files)
+    else:
+        print(f"Failed to retrieve the page. Status code: {response.status_code}")
+
+elif provider == "AC":
+    # ACLED-specific code for API request and processing
+    # Convert start and end dates to datetime objects for ACLED
+    start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+    end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+
+    base_url = 'https://api.acleddata.com/acled/read.csv'
+    parameters = {
+        'terms': 'accept',
+        'key': '4d0vSPbI3*0iqbS99BtU',
+        'email': '9001456@alumnos.ufv.es',
+        'event_date': f"{start_date}|{end_date}",
+		'country':country,
+		'region':continent}
+
+
+    # Make the API request
+    response = requests.get(base_url, params=parameters)
+    if response.status_code == 200:
+        combined_acled = pd.read_csv(io.StringIO(response.text), low_memory=False)
+        # Additional processing steps for ACLED data if necessary
+        # Convert combined data frame to a CAS table
+        ds = SAS.df2sd(combined_acled, "userdata")
+        #SAS.symput('nb_obs', len(combined_acled))
+    else:
+        print(f"Failed to retrieve the page. Status code: {response.status_code}")
+
+endsubmit;
+quit;
+
+
+%let start_date_fmt=%sysfunc(compress(&start_date,'-'));
+%let end_date_fmt=%sysfunc(compress(&end_date,'-'));
+
+%let target_table_name=&provider._&start_date_fmt._&end_date_fmt;
+
+data casuser.&target_table_name;
+set userdata;
+run;
+
+
+proc casutil;
+droptable casdata="&target_table_name" incaslib="public" quiet;
+quit;
+
+proc casutil;
+PROMOTE CASDATA="&target_table_name" INCASLIB="casuser"
+CASOUT="&target_table_name" 
+OUTCASLIB="public"
+DROP ;
+quit;
+
+
+data status;
+status='OK';
+output;
+run;
+
+
+PROC JSON out=_webout pretty nosastags noscan trimblanks;
+
+write open object; 
+
+	
+	
+	write values "items";
+		write open array;
+				export work.status;
+	write close;
+	
+write close;
+run;
+
+
+
+

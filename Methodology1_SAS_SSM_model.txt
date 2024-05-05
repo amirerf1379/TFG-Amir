@@ -1,0 +1,225 @@
+#Macro for executing the State Space Model.
+
+%macro ExecuteSSM(in_country, in_period, in_period_label, in_length,in_model_var,in_id,flag_period);
+
+	#Define macro variables
+
+	%let in_ds_event 	= irw_&in_country._&in_period_label._count;
+	%let in_ds_shock 	= irw_&in_country._&in_period_label._shock;
+	%let in_ds_ao 		= irw_&in_country._&in_period_label._ao;
+	%let in_ds_input 	= &in_country._&in_period_label._sum;
+
+	%let in_ds_modsum	= irw_&in_country._&in_period_label._modsum;
+	%let in_ds_stsum 	= irw_&in_country._&in_period_label._stsum;
+	%let in_ds_parest	= irw_&in_country._&in_period_label._parest;
+	%let in_ds_fstest	= irw_&in_country._&in_period_label._fstest;
+	%let in_ds_fitsum	= irw_&in_country._&in_period_label._fitsum;
+	%let in_ds_infcrt	= irw_&in_country._&in_period_label._infcrt;
+
+
+	#Actual Model:
+
+	proc ssm 
+		data		= cpa_inp.&in_ds_input 		
+		plots=all		
+		breakpeaks								
+		stateinfo
+		;
+	
+		ODS OUTPUT 
+			MaximalShockSummary	= cpa_out.&in_ds_shock 
+			AOSummary			= cpa_out.&in_ds_ao
+			;
+	
+		id		&in_id 
+				%if (&flag_period = 1) %then %do;
+					interval=&in_period
+				%end;
+				; 
+		
+
+		trend 		levelvar=0 
+				irw(ll);
+
+		
+		state									
+				type=season(length=&in_length)
+				seasonState(1) ;
+
+		component								
+				 season = seasonState[1];
+		
+		irregular wn;
+		
+		output 	out = cpa_out.&in_ds_event 
+				BREAK ()
+				AO    ()
+				ALPHA=0.1
+				;
+	run;
+
+
+	#Some conditional statements for labeling and consistency purposes:
+ 
+	%if (&flag_period = 0) %then %do;
+		%addLabel(&in_ds_event, &in_ds_input, &in_id, first_day_num);
+	%end;
+
+	%if %sysfunc(exist(CPA_OUT.&in_ds_shock)) %then %do;
+		data CPA_OUT.&in_ds_shock;
+			set CPA_OUT.&in_ds_shock;
+			rename time = &in_id;
+		run;
+
+		%if (&flag_period = 0) %then %do;
+			%addLabel(&in_ds_shock, &in_ds_input, &in_id, first_day_num);
+		%end;
+	%end;
+	
+	%if %sysfunc(exist(CPA_OUT.&in_ds_ao)) %then %do;
+		data CPA_OUT.&in_ds_ao;
+			set 	CPA_OUT.&in_ds_ao;
+			rename 	time = &in_id;
+		run;
+
+		%if (&flag_period = 0) %then %do;
+			%addLabel(&in_ds_ao, &in_ds_input, &in_id, first_day_num);
+		%end;
+	%end;
+
+%mend ExecuteSSM;
+
+
+
+
+
+#Macros for graphing the results:
+
+%macro CreateOnePlot(in_country,in_period_label,i_label_plot,in_variable,in_flag_scatter,in_flag_ref,in_model_var,in_country_label,in_var_label);
+	%let in_ds_event 	= irw_&in_country._&in_period_label._count;
+	%let in_ds_shock 	= irw_&in_country._&in_period_label._shock;
+	%let in_ds_ao 		= irw_&in_country._&in_period_label._ao;
+
+	proc sgplot data= cpa_out.&in_ds_event;
+		title "&in_country_label. &in_period_label. &in_var_label. (&i_label_plot)";
+
+		series	
+			x	= first_day_num 	
+			y	= &in_variable
+			;
+		
+		%if (&in_flag_scatter = 1) %then  %do;
+			scatter 
+				x	= first_day_num 	
+				y	= &in_model_var
+				;
+		%end;
+		
+		%if (&in_flag_ref = 1) %then %do;
+
+			%if %sysfunc(exist(CPA_OUT.&in_ds_shock)) %then %do;
+				refline &struct_breaks 
+					/ 	axis		= x 
+						lineattrs	= (pattern=shortdash)
+						LABEL		= "Structural Break"
+						name		= "Structural Breaks Line";
+			%end;
+			
+			%if %sysfunc(exist(CPA_OUT.&in_ds_ao)) %then %do;
+				refline &outliers 
+					/	axis	= x
+						LABEL	= "Additive Outlier"
+						name	= "Additive Outliers Line"
+					;
+			%end;
+		%end;
+	run;
+%mend;
+
+%macro CreatePlot(in_country, in_period_label,in_model_var,in_country_label,in_var_label);
+	%let in_ds_event 	= irw_&in_country._&in_period_label._count;
+	%let in_ds_shock 	= irw_&in_country._&in_period_label._shock;
+	%let in_ds_ao 		= irw_&in_country._&in_period_label._ao;
+
+	title "&in_country_label. &in_period_label. &in_var_label.";
+
+	%if %sysfunc(exist(CPA_OUT.&in_ds_shock)) %then %do;
+		proc sql noprint;
+			select 	put(first_day_num,9.)
+			into	:struct_breaks
+			separated by " "
+			from	CPA_OUT.&in_ds_shock
+			;
+		quit;
+		
+		data _temp_out;
+			set CPA_OUT.&in_ds_shock;
+			length	type_outlier		$ 25
+					;
+			label	type_outlier="Type"
+					first_day_num="Period start"
+					;
+			type_outlier = "Structural break";
+			keep first_day_num type_outlier;
+		run;
+
+		proc sql;
+			select * from _temp_out;
+		quit;
+	%end;
+
+	%if %sysfunc(exist(CPA_OUT.&in_ds_ao)) %then %do;
+		proc sql noprint;
+			select 	put(first_day_num,9.)
+			into	:outliers
+			separated by " "
+			from	cpa_out.&in_ds_ao
+			;
+		quit;
+
+		data _temp_out;
+			set CPA_OUT.&in_ds_ao;
+			length	type_outlier		$ 25
+					;
+			label	type_outlier="Type"
+					first_day_num="Period start"
+					;
+			type_outlier = "Additive outlier";
+			keep first_day_num type_outlier;
+		run;
+
+		proc sql;
+			select * from _temp_out;
+		quit;
+	%end;
+
+	%CreateOnePlot(&in_country. , &in_period_label. , trend,smoothed_irw,1,1,&in_model_var,&in_country_label,&in_var_label);
+	%CreateOnePlot(&in_country. , &in_period_label. , trend,smoothed_irw,0,1,&in_model_var,&in_country_label,&in_var_label);
+	%CreateOnePlot(&in_country. , &in_period_label. , trend + seasonality,smoothed_pattern,1,1,&in_model_var,&in_country_label,&in_var_label);
+	%CreateOnePlot(&in_country. , &in_period_label. , seasonality,smoothed_season,0,0,&in_model_var,&in_country_label,&in_var_label);
+	%CreateOnePlot(&in_country. , &in_period_label. , irw model,smoothed_&in_model_var.,1,1,&in_model_var,&in_country_label,&in_var_label);
+	%CreateOnePlot(&in_country. , &in_period_label. , white noise,smoothed_wn,0,1,&in_model_var,&in_country_label,&in_var_label);
+%mend;
+
+%macro runOneCountry(in_country, in_period, in_period_label, in_length,in_model_var,in_id,flag_period,in_country_label,in_var_label);
+	%ExecuteSSM(&in_country, &in_period, &in_period_label, &in_length,&in_model_var,&in_id,&flag_period);	
+	%CreatePlot(&in_country, &in_period_label,&in_model_var,&in_country_label,&in_var_label);
+%mend runOneCountry;
+
+
+
+#Plot Morocco:
+
+%macro runAllCountries(in_period, in_period_label, in_length,in_model_var,in_id,flag_period,in_var_label);
+	%runOneCountry(MAR, &in_period, &in_period_label, &in_length,&in_model_var,&in_id,&flag_period,Morocco,&in_var_label);	
+%mend runAllCountries;
+
+%macro RunnAllCP();
+	%runAllCountries(week, weekly, 52,irw_event_count,np_week,0,event count);
+	%runAllCountries(week, weekly, 52,irw_event_count_mc,np_week,0,material conflict);
+	%runAllCountries(week, weekly, 52,irw_event_count_vc,np_week,0,verbal conflict);
+	%runAllCountries(week, weekly, 52,avg_avgtone,np_week,0,average tone);
+	%runAllCountries(week, weekly, 52,avg_goldsteinscale,np_week,0, goldstein scale);
+%mend RunnAllCP;
+
+%RunnAllCP();

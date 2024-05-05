@@ -1,0 +1,162 @@
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import IsolationForest
+import matplotlib.pyplot as plt
+import ruptures as rpt
+
+# Load the dataset
+file_path = 'C:/Users/amire/OneDrive - UFV/Desktop/Year 4/TFG/Segunda entrega/Datasets/Morroco_events.csv'
+data = pd.read_csv(file_path)
+
+# Filter start data 
+data['SQLDATE'] = pd.to_datetime(data['SQLDATE'], format='%Y%m%d')
+data = data[data['SQLDATE'] >= '2021-01-01']
+
+# Aggregate Material conflict and Verbal conflict by week
+data['MaterialConflicts'] = data['QuadClass'] == 4
+data['VerbalConflicts'] = data['QuadClass'] == 3
+
+
+# Aggregate the data by week to count the number of events per week as the first response series variable
+weekly_events_count = data.resample('W-Mon', on='SQLDATE').size().reset_index(name='EventCount')
+weekly_events_count.set_index('SQLDATE', inplace=True)
+
+
+#Prepare rest of response series variables
+weekly_material_conflicts = data.groupby([pd.Grouper(key='SQLDATE', freq='W-Mon')])['MaterialConflicts'].sum()
+weekly_verbal_conflicts = data.groupby([pd.Grouper(key='SQLDATE', freq='W-Mon')])['VerbalConflicts'].sum()
+weekly_avg_tone = data.groupby([pd.Grouper(key='SQLDATE', freq='W-Mon')])['AvgTone'].mean()
+weekly_goldstein_scale = data.groupby([pd.Grouper(key='SQLDATE', freq='W-Mon')])['GoldsteinScale'].mean()
+
+
+
+
+# Change point detection through Event count response series
+
+# Outlier Detection using Isolation Forest
+iso_forest = IsolationForest(n_estimators=100, contamination=0.01)
+residuals = weekly_events_count['EventCount'].values.reshape(-1, 1)
+outlier_predictions = iso_forest.fit_predict(residuals)
+
+# Structural Break Detection using ruptures
+signal = weekly_events_count.values.reshape(-1, 1)
+algo = rpt.Pelt(model="l2", min_size=2, jump=1).fit(signal)
+breaks = algo.predict(pen=4080000)
+
+
+
+
+# Change point detection through Material conflict response series
+
+# Outlier Detection
+iso_forest_material = IsolationForest(n_estimators=100, contamination=0.01, random_state=42)
+residuals_material = weekly_material_conflicts.values.reshape(-1, 1)
+outlier_predictions_material = iso_forest_material.fit_predict(residuals_material)
+
+#Structural Break Detection using ruptures
+signal_material = weekly_material_conflicts.values.reshape(-1, 1)
+algo_material = rpt.Pelt(model="l2", min_size=2, jump=1).fit(signal_material)
+breaks_material = algo_material.predict(pen=800000)
+
+
+
+#Change point detection through Verbal conflict response variable:
+
+
+# Outlier Detection
+iso_forest_verbal = IsolationForest(n_estimators=100, contamination=0.01, random_state=42)
+residuals_verbal = weekly_verbal_conflicts.values.reshape(-1, 1)
+outlier_predictions_verbal = iso_forest_verbal.fit_predict(residuals_verbal)
+
+#Structural Break Detection using ruptures
+signal_verbal = weekly_verbal_conflicts.values.reshape(-1, 1)
+algo_verbal = rpt.Pelt(model="l2", min_size=2, jump=1).fit(signal_verbal)
+breaks_verbal = algo_verbal.predict(pen=800000)
+ 
+
+
+
+#Change point detection through Average Tone response variable
+
+
+# Outlier Detection
+iso_forest_tone = IsolationForest(n_estimators=100, contamination=0.01, random_state=42)
+residuals_tone = weekly_avg_tone.values.reshape(-1, 1)
+outlier_predictions_tone = iso_forest_tone.fit_predict(residuals_tone)
+
+# Structural Break Detection using ruptures
+signal_tone = weekly_avg_tone.values.reshape(-1, 1)
+algo_tone = rpt.Pelt(model="l2", min_size=2, jump=1).fit(signal_tone)
+breaks_tone = algo_tone.predict(pen=20)
+
+
+
+
+#Change point detection through Goldstein response variable
+
+# Outlier Detection
+iso_forest_GS = IsolationForest(n_estimators=100, contamination=0.01, random_state=42)
+residuals_GS = weekly_goldstein_scale.values.reshape(-1, 1)
+outlier_predictions_GS = iso_forest_GS.fit_predict(residuals_GS)
+
+# Structural Break Detection using ruptures
+signal_GS = weekly_goldstein_scale.values.reshape(-1, 1)
+algo_GS = rpt.Pelt(model="l2", min_size=2, jump=1).fit(signal_GS)
+breaks_GS = algo_GS.predict(pen=5)
+
+
+
+
+# Plot the results
+plt.figure(figsize=(12, 10))
+
+# Plot the original data
+plt.subplot(2, 1, 1)
+plt.plot(weekly_events_count.index, weekly_events_count['EventCount'], label='Weekly Event Count', color='blue')
+plt.scatter(weekly_events_count.index[outlier_predictions == -1], weekly_events_count['EventCount'][outlier_predictions == -1], color='red', label='Detected Outliers')
+plt.title('Original Time Series Data with Detected Additive Outliers')
+plt.xlabel('Date')
+plt.ylabel('Event Count')
+plt.legend()
+
+# Plot the detected breaks
+plt.subplot(2, 1, 2)
+plt.plot(weekly_events_count.index, weekly_events_count['EventCount'], label='Weekly Event Count', color='blue')
+for b in breaks:
+    try:
+        if 0 <= b < len(weekly_events_count.index):
+            plt.axvline(x=weekly_events_count.index[b], color='red', linestyle='--', label='Detected Break' if b == breaks[0] else "")
+    except IndexError:
+        pass
+plt.title('Weekly Event Count with Detected Structural Breaks')
+plt.xlabel('Date')
+plt.ylabel('Event Count')
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+# print the results
+def print_results(metric_name, dates_index, breaks, outlier_predictions):
+    print(f"Results for {metric_name}:")
+    print("Dates of Structural Breaks:")
+    for b in breaks:
+        try:
+            print(dates_index[b])
+        except IndexError:
+            pass
+    
+    print("\nDates of Additive Outliers:")
+    outlier_dates = dates_index[outlier_predictions == -1]
+    for date in outlier_dates:
+        print(date)
+    print("\n" + "-"*50 + "\n")
+
+
+# Printing the results for each response series variable
+print_results("Event count",  weekly_events_count.index, breaks, outlier_predictions)
+print_results("Material Conflict Events", weekly_material_conflicts.index, breaks_material, outlier_predictions_material)
+print_results("Verbal Conflict Events", weekly_verbal_conflicts.index, breaks_verbal, outlier_predictions_verbal)
+print_results("Average tone", weekly_avg_tone.index, breaks_tone, outlier_predictions_tone)
+print_results("Average Weekly Goldstein Scale", weekly_goldstein_scale.index, breaks_GS, outlier_predictions_GS) 
+    
